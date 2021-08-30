@@ -1,7 +1,7 @@
 #[cfg(feature = "serde-serialize-no-std")]
 use serde::{Deserialize, Serialize};
 
-use num::One;
+use num::{One, Signed};
 use simba::scalar::ComplexField;
 use simba::simd::SimdComplexField;
 
@@ -205,6 +205,50 @@ where
         }
 
         Some(Cholesky { chol: matrix })
+    }
+
+    /// Attempts to compute the Cholesky decomposition of `matrix`, using the
+    /// given element in places where the decomposition would otherwise fail.
+    ///
+    /// The result can be garbage if your value is non-positive, resulting in
+    /// non-PSD matrix. Same caveats as with `new_unchecked` apply.
+    pub fn new_with_substitute_unchecked(mut matrix: OMatrix<T, D, D>, substitute: T) -> Self
+    where
+        T: Signed,
+    {
+        assert!(matrix.is_square(), "The input matrix must be square.");
+
+        let n = matrix.nrows();
+
+        for j in 0..n {
+            for k in 0..j {
+                let factor = unsafe { -matrix.get_unchecked((j, k)).clone() };
+
+                let (mut col_j, col_k) = matrix.columns_range_pair_mut(j, k);
+                let mut col_j = col_j.rows_range_mut(j..);
+                let col_k = col_k.rows_range(j..);
+
+                col_j.axpy(factor.conjugate(), &col_k, T::one());
+            }
+
+            let diag = unsafe { matrix.get_unchecked((j, j)).clone() };
+
+            let denom = match diag.try_sqrt() {
+                // We need a strictly positive result for Cholesky so we ensure
+                // it here.
+                Some(denom) if !denom.is_zero() && !denom.is_negative() => denom,
+                _ => substitute.clone(),
+            };
+
+            unsafe {
+                *matrix.get_unchecked_mut((j, j)) = denom.clone();
+            }
+
+            let mut col = matrix.slice_range_mut(j + 1.., j);
+            col /= denom;
+        }
+
+        Cholesky { chol: matrix }
     }
 
     /// Given the Cholesky decomposition of a matrix `M`, a scalar `sigma` and a vector `v`,
